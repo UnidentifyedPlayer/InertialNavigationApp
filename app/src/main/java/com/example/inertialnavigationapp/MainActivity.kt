@@ -14,17 +14,17 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.Address
-import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
+import android.os.Build
 import android.provider.Settings
+import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
+import com.google.android.gms.common.Feature
 import com.google.android.gms.location.FusedLocationProviderClient
-import java.util.Locale
+import com.google.android.gms.location.LocationServices
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
@@ -32,31 +32,46 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private var rotationVectorSensor: Sensor? = null
     private var stepCountSensor: Sensor? = null
+    private var stepSensorType: Int = 0
     private var sensorManager: SensorManager? = null
 
     private var tracker: PositionTracker? = null
 
     private var lastAccelerometer = FloatArray(3, {0f})
-    private var lastRotationVector = FloatArray(4, {0f})
+    private var lastRotationVector = FloatArray(5, {0f})
     private var lastStepCount:Int = 0;
     private var stepsSet:Boolean = false;
 
-    private var locationSet:Boolean = false;
-
 
     private lateinit var mFusedLocationClient: FusedLocationProviderClient
-    private val permissionId = 2
+    private val locationPermissionId = 2
+    private val activityPermissionId = 3
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
         linAccelSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rotationVectorSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        stepCountSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+
+
+        // Check and request permission for Activity Recognition (Android 10+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (checkActivityPermissions()) {
+                setupStepSensor()
+            }
+            else{
+                requestActivityPermission()
+            }
+        }
+
+
 
         tracker = PositionTracker();
+
 
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
@@ -65,20 +80,56 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
+
+        val getLocationButton: Button = findViewById(R.id.getLocationBtn)
+
+        getLocationButton.setOnClickListener {
+            getLocation()
+        }
+    }
+
+    private fun setupStepSensor(){
+        stepCountSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        if(stepCountSensor == null){
+            stepCountSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+            if(stepCountSensor != null)
+                Toast.makeText(this, "Using high latency step sensor", Toast.LENGTH_LONG).show()
+                stepSensorType = 2 //step counter sensor
+        }
+        else
+            stepSensorType = 1 //step detector sensor
+
+        if((stepSensorType == 0) &&
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_STEP_COUNTER) &&
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_STEP_DETECTOR)){
+            Toast.makeText(this, "No step sensors found on the device", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun getSensorOutput(event: SensorEvent?): Int{
+        if(stepSensorType == 1){ //step detector sensor
+            return event!!.values[0].toInt()
+        }
+        if(stepSensorType == 2){ //step counter sensor
+            return event!!.values[0].toInt() - lastStepCount
+        }
+        return 0
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event!!.sensor == linAccelSensor) {
             System.arraycopy(event.values, 0, lastAccelerometer, 0, event.values.size)
         } else if (event.sensor == rotationVectorSensor) {
-            System.arraycopy(event.values, 0, lastRotationVector, 0, event.values.size)
+            System.arraycopy(event.values, 0, lastRotationVector, 0, 4)
         } else if (event.sensor == stepCountSensor) {
             if(stepsSet){
-                if(locationSet){
-                    val stepsPassed = event.values[0].toInt() - lastStepCount
+                if(tracker!!.areCoordinatesSet()){
+                    val stepsPassed = getSensorOutput(event)
                     var rotationMatrix = FloatArray(9)
                     SensorManager.getRotationMatrixFromVector(rotationMatrix,lastRotationVector)
                     tracker!!.updatePosition(lastAccelerometer, rotationMatrix, stepsPassed)
+
+                    updateLocationDisplay()
                 }
             }
             else{
@@ -104,15 +155,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onPause()
         sensorManager?.unregisterListener(this)
     }
+
+    private fun updateLocationDisplay(){
+        if(!tracker!!.areCoordinatesSet()){
+            return
+        }
+        val latitudeTextView: TextView = findViewById(R.id.latitudeText)
+        val longitudeTextView: TextView = findViewById(R.id.longitudeText)
+
+        latitudeTextView.text = "Latitude: ${tracker!!.currentCoordinates[0]}"
+        longitudeTextView.text = "Longitude: ${tracker!!.currentCoordinates[1]}"
+    }
+
     @SuppressLint("MissingPermission", "SetTextI18n")
     private fun getLocation() {
-        if (checkPermissions()) {
+        if (checkLocationPermissions()) {
             if (isLocationEnabled()) {
                 mFusedLocationClient.lastLocation.addOnCompleteListener(this) { task ->
                     val location: Location? = task.result
                     if (location != null) {
                         tracker!!.setStartCoordinates(location.latitude.toFloat(), location.longitude.toFloat());
-                        locationSet = true;
+                        updateLocationDisplay()
                     }
                 }
             } else {
@@ -121,7 +184,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 startActivity(intent)
             }
         } else {
-            requestPermissions()
+            requestLocationPermissions()
         }
     }
     private fun isLocationEnabled(): Boolean {
@@ -131,7 +194,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             LocationManager.NETWORK_PROVIDER
         )
     }
-    private fun checkPermissions(): Boolean {
+    private fun checkLocationPermissions(): Boolean {
         if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.ACCESS_COARSE_LOCATION
@@ -145,25 +208,57 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         return false
     }
-    private fun requestPermissions() {
+
+    private fun checkActivityPermissions(): Boolean {
+        if (ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+        )
+            return true
+        return false
+    }
+    private fun requestLocationPermissions() {
         ActivityCompat.requestPermissions(
             this,
             arrayOf(
                 Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.ACCESS_FINE_LOCATION
             ),
-            permissionId
+            locationPermissionId
         )
     }
+
+    private fun requestActivityPermission(){
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.ACTIVITY_RECOGNITION
+            ),
+            activityPermissionId
+        )
+    }
+
     @SuppressLint("MissingSuperCall")
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<String>,
         grantResults: IntArray
     ) {
-        if (requestCode == permissionId) {
+        if (requestCode == locationPermissionId) {
             if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                Toast.makeText(this, "Permission Granted", Toast.LENGTH_SHORT).show();
                 getLocation()
+            } else {
+                Toast.makeText(this, "Permission Denied", Toast.LENGTH_SHORT).show();
+            }
+        }
+        if (requestCode == activityPermissionId){
+            if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                Toast.makeText(this, "Permission Granted", Toast.LENGTH_SHORT).show();
+                setupStepSensor()
+            } else {
+                Toast.makeText(this, "Permission Denied", Toast.LENGTH_SHORT).show();
             }
         }
     }
