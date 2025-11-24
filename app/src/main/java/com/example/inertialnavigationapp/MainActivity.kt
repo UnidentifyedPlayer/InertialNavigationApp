@@ -1,10 +1,5 @@
 package com.example.inertialnavigationapp
 
-import android.os.Bundle
-import androidx.activity.enableEdgeToEdge
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -17,12 +12,17 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
+import android.view.Surface
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import com.google.android.gms.common.Feature
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 
@@ -37,6 +37,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private var tracker: PositionTracker? = null
 
+    private var cumulativeLinAcceleration = FloatArray(3, {0f})
+    private var n = 0;
     private var lastAccelerometer = FloatArray(3, {0f})
     private var lastRotationVector = FloatArray(5, {0f})
     private var lastStepCount:Int = 0;
@@ -46,6 +48,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var mFusedLocationClient: FusedLocationProviderClient
     private val locationPermissionId = 2
     private val activityPermissionId = 3
+
+    private var calculationsInfo : String? = "test write"
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,6 +90,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         getLocationButton.setOnClickListener {
             getLocation()
+            for(i in 0..2){
+                cumulativeLinAcceleration[i] = 0f
+            }
+            n = 0
         }
     }
 
@@ -92,9 +101,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         stepCountSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         if(stepCountSensor == null){
             stepCountSensor = sensorManager!!.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-            if(stepCountSensor != null)
+            if(stepCountSensor != null) {
                 Toast.makeText(this, "Using high latency step sensor", Toast.LENGTH_LONG).show()
                 stepSensorType = 2 //step counter sensor
+            }
         }
         else
             stepSensorType = 1 //step detector sensor
@@ -116,19 +126,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return 0
     }
 
+    private  fun constructRotVectorString(lastRotationVector: FloatArray): String{
+        var str : String = ""
+        for(whateever in lastRotationVector.asList()){
+            str = str + whateever + "\n";
+        }
+        return str
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
         if (event!!.sensor == linAccelSensor) {
             System.arraycopy(event.values, 0, lastAccelerometer, 0, event.values.size)
+            var rotationMatrix = getRotationMatrix()
+            tracker!!.updateDirectionVector(lastAccelerometer,rotationMatrix)
+            //updateCumulativeAcceleration()
         } else if (event.sensor == rotationVectorSensor) {
             System.arraycopy(event.values, 0, lastRotationVector, 0, 4)
+            updatePhoneYAxis()
         } else if (event.sensor == stepCountSensor) {
             if(stepsSet){
                 if(tracker!!.areCoordinatesSet()){
                     val stepsPassed = getSensorOutput(event)
-                    var rotationMatrix = FloatArray(9)
-                    SensorManager.getRotationMatrixFromVector(rotationMatrix,lastRotationVector)
-                    tracker!!.updatePosition(lastAccelerometer, rotationMatrix, stepsPassed)
-
+                    var rotationMatrix = getRotationMatrix()
+                    calculationsInfo = tracker!!.updatePosition(lastAccelerometer, rotationMatrix, stepsPassed) +
+                            "rotVector:\n" + constructRotVectorString(lastRotationVector)
+                    //        "rotVector: " + lastRotationVector.asList() +";\n"
+                    //writeAppSpecificExternalFile(applicationContext, true)
                     updateLocationDisplay()
                 }
             }
@@ -138,6 +161,53 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             lastStepCount = event.values[0].toInt()
 
         }
+    }
+
+    fun getOrientation(context: Context): Int {
+        return context.display?.rotation ?: 0
+    }
+
+    fun getRotationMatrix(): FloatArray{
+        var rotationMatrix = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rotationMatrix,lastRotationVector)
+        var rotationMatrixAdjusted = FloatArray(9)
+        when (getOrientation(baseContext)) {
+            Surface.ROTATION_0 -> rotationMatrixAdjusted = rotationMatrix.clone()
+            Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X,
+                rotationMatrixAdjusted
+            )
+
+            Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y,
+                rotationMatrixAdjusted
+            )
+
+            Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X,
+                rotationMatrixAdjusted
+            )
+        }
+        return rotationMatrixAdjusted
+    }
+
+    fun usingKotlinStringFormat(input: Float, scale: Int) = "%.${scale}f".format(input)
+
+    fun updatePhoneYAxis(){
+        var rotationMatrix = getRotationMatrix()
+        //MathUtils.transpose(rotationMatrix)
+        var yAxis = floatArrayOf(0f,1f,0f)
+        var yAxisInWorld = FloatArray(3)
+        MathUtils.rotateVector(rotationMatrix,yAxis,yAxisInWorld)
+        val rawLinAccTextView: TextView = findViewById(R.id.rawLinAccTextView)
+        rawLinAccTextView.text =
+            "Phone YAxis points to: " +
+                    "\nx: ${usingKotlinStringFormat(yAxisInWorld[0],7)}" +
+                    "\ny: ${usingKotlinStringFormat(yAxisInWorld[1],7)}" +
+                    "\nz: ${usingKotlinStringFormat(yAxisInWorld[2],7)}"
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
@@ -162,9 +232,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         val latitudeTextView: TextView = findViewById(R.id.latitudeText)
         val longitudeTextView: TextView = findViewById(R.id.longitudeText)
+        val sensorInfoTextView: TextView = findViewById(R.id.sensorInfoTextView)
 
         latitudeTextView.text = "Latitude: ${tracker!!.currentCoordinates[0]}"
         longitudeTextView.text = "Longitude: ${tracker!!.currentCoordinates[1]}"
+        sensorInfoTextView.text = calculationsInfo
     }
 
     @SuppressLint("MissingPermission", "SetTextI18n")
@@ -262,4 +334,5 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
     }
+
 }

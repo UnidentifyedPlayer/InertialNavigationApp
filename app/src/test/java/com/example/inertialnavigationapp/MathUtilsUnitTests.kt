@@ -26,6 +26,19 @@ class MathUtilsUnitTests {
     }
 
     @Test
+    fun testTransposeMatrix(){
+
+        var rotationMatrix = floatArrayOf(1f, 1f, 2f, 0f, 1f, 3f, 0f, 0f, 1f)
+        MathUtils.transpose(rotationMatrix)
+        var excpectedMatrix = floatArrayOf(1f, 0f, 0f, 1f, 1f, 0f, 2f, 3f, 1f)
+
+        for(i in 0..8){
+            assertEquals(excpectedMatrix[i], rotationMatrix[i])
+        }
+    }
+
+
+    @Test
     fun testIdentityMatrixConstruction(){
         var expectedRotationMatrix = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 
